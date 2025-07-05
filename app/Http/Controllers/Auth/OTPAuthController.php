@@ -6,9 +6,7 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\User;
 use Illuminate\Support\Facades\Auth;
-use Vonage\Client as VonageClient;
-use Vonage\Client\Credentials\Basic;
-use Vonage\SMS\Message\SMS;
+use Twilio\Rest\Client as TwilioClient;
 use Illuminate\Support\Facades\Log;
 
 class OTPAuthController extends Controller
@@ -52,36 +50,76 @@ class OTPAuthController extends Controller
             ]
         );
 
+        // Force save the OTP to ensure it's stored
+        $user->otp_code = $otp;
+        $user->save();
+
+        Log::info("User created/updated: " . $user->id);
+        Log::info("OTP saved: " . $user->otp_code);
+
         try {
-            $basic  = new Basic(env('VONAGE_API_KEY'), env('VONAGE_API_SECRET'));
-            $client = new VonageClient($basic);
-
-            $from = env('VONAGE_BRAND_NAME') ?: 'YourApp';
-            $messageText = "Your OTP is: $otp";
-
-            Log::info("Sending SMS from $from to $to with message: $messageText");
-
-            $response = $client->sms()->send(new SMS($to, $from, $messageText));
-            $message = $response->current();
-
-            Log::info("Vonage SMS status: " . $message->getStatus());
-
-            if ($message->getStatus() != 0) {
-                Log::error('SMS sending failed with status: ' . $message->getStatus());
-                return redirect()->back()->withErrors([
-                    'phone' => 'SMS sending failed. Status: ' . $message->getStatus()
+            // Check if we're in test mode
+            if (env('SMS_TEST_MODE', false)) {
+                Log::info("TEST MODE: OTP $otp would be sent to $to");
+                Log::info("TEST MODE: In production, this would send SMS via Twilio");
+                
+                return redirect()->route('auth.otp.verify.form')->with([
+                    'phone' => $to,
+                    'success' => "TEST MODE: Your OTP is: $otp (SMS would be sent in production)",
+                    'test_otp' => $otp
                 ]);
             }
+
+            $accountSid = env('TWILIO_ACCOUNT_SID');
+            $authToken = env('TWILIO_AUTH_TOKEN');
+            $fromNumber = env('TWILIO_PHONE_NUMBER');
+
+            if (!$accountSid || !$authToken || !$fromNumber) {
+                throw new \Exception('Twilio credentials not configured');
+            }
+
+            $client = new TwilioClient($accountSid, $authToken);
+            $messageText = "Your HomePet OTP is: $otp";
+
+            Log::info("Sending SMS from $fromNumber to $to with message: $messageText");
+            Log::info("Twilio Account SID: " . $accountSid);
+
+            $message = $client->messages->create(
+                $to, // To
+                [
+                    'from' => $fromNumber,
+                    'body' => $messageText
+                ]
+            );
+
+            Log::info("Twilio SMS SID: " . $message->sid);
+            Log::info("Twilio SMS Status: " . $message->status);
+
+            if ($message->status === 'failed' || $message->status === 'undelivered') {
+                Log::error('SMS sending failed with status: ' . $message->status);
+                return redirect()->back()->withErrors([
+                    'phone' => 'SMS sending failed. Status: ' . $message->status
+                ]);
+            }
+
+            Log::info('SMS sent successfully via Twilio');
+
         } catch (\Exception $e) {
             Log::error('Error sending SMS: ' . $e->getMessage());
-            return redirect()->back()->withErrors([
-                'phone' => 'Error sending SMS: ' . $e->getMessage()
+            Log::error('Error trace: ' . $e->getTraceAsString());
+            
+            // If Twilio fails, fall back to test mode
+            Log::info("Falling back to test mode due to Twilio error");
+            return redirect()->route('auth.otp.verify.form')->with([
+                'phone' => $to,
+                'success' => "SMS failed, but here's your OTP: $otp (Please verify your phone in Twilio)",
+                'test_otp' => $otp
             ]);
         }
 
         return redirect()->route('auth.otp.verify.form')->with([
             'phone' => $to,
-            'success' => 'OTP sent successfully. Please enter the code below.'
+            'success' => 'OTP sent successfully. Please enter the code below. If you don\'t receive it, check your spam folder or try again.'
         ]);
     }
 
@@ -108,12 +146,22 @@ class OTPAuthController extends Controller
             $phone = '+' . $phone;
         }
 
-        $user = User::where('phone_number', $phone)
-                    ->where('otp_code', $request->otp_code)
-                    ->first();
+        Log::info("Verifying OTP for phone: $phone");
+        Log::info("Entered OTP: " . $request->otp_code);
+
+        $user = User::where('phone_number', $phone)->first();
 
         if (!$user) {
-            return redirect()->back()->withErrors(['otp_code' => 'Invalid OTP']);
+            Log::error("No user found for phone: $phone");
+            return redirect()->back()->withErrors(['otp_code' => 'No user found with this phone number']);
+        }
+
+        Log::info("User found: " . $user->name);
+        Log::info("Stored OTP: " . ($user->otp_code ?? 'NULL'));
+
+        if ($user->otp_code != $request->otp_code) {
+            Log::error("OTP mismatch - Entered: " . $request->otp_code . ", Stored: " . ($user->otp_code ?? 'NULL'));
+            return redirect()->back()->withErrors(['otp_code' => 'Invalid OTP. Please check and try again.']);
         }
 
         $user->otp_code = null;
@@ -121,27 +169,39 @@ class OTPAuthController extends Controller
 
         Auth::login($user);
 
+        Log::info("User logged in successfully: " . $user->name);
+
         return redirect('/home')->with('success', 'Logged in successfully.');
     }
 
-    // Optional test method to test Vonage SMS manually
+    // Optional test method to test Twilio SMS manually
     public function testSendSMS()
     {
         try {
-            $basic  = new Basic(env('VONAGE_API_KEY'), env('VONAGE_API_SECRET'));
-            $client = new VonageClient($basic);
+            $accountSid = env('TWILIO_ACCOUNT_SID');
+            $authToken = env('TWILIO_AUTH_TOKEN');
+            $fromNumber = env('TWILIO_PHONE_NUMBER');
 
+            if (!$accountSid || !$authToken || !$fromNumber) {
+                return 'Twilio credentials not configured';
+            }
+
+            $client = new TwilioClient($accountSid, $authToken);
             $to = '+855979480905'; // Replace with your test phone number
-            $from = env('VONAGE_BRAND_NAME') ?: 'YourApp';
-            $messageText = 'Test SMS from Laravel + Vonage.';
+            $messageText = 'Test SMS from Laravel + Twilio.';
 
-            $response = $client->sms()->send(new SMS($to, $from, $messageText));
-            $message = $response->current();
+            $message = $client->messages->create(
+                $to,
+                [
+                    'from' => $fromNumber,
+                    'body' => $messageText
+                ]
+            );
 
-            if ($message->getStatus() == 0) {
-                return 'Test SMS sent successfully to ' . $to;
+            if ($message->status === 'sent' || $message->status === 'delivered') {
+                return 'Test SMS sent successfully to ' . $to . ' (SID: ' . $message->sid . ')';
             } else {
-                return 'Test SMS failed with status: ' . $message->getStatus();
+                return 'Test SMS failed with status: ' . $message->status;
             }
         } catch (\Exception $e) {
             return 'Error sending test SMS: ' . $e->getMessage();

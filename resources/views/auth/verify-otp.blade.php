@@ -29,6 +29,13 @@
                 </div>
             @endif
 
+            @if(session('test_otp'))
+                <div class="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded-md mb-6" role="alert">
+                    <strong>TEST MODE:</strong> Your OTP is: <span class="font-mono text-lg font-bold">{{ session('test_otp') }}</span>
+                    <br><small>In production, this would be sent via SMS</small>
+                </div>
+            @endif
+
             <form method="POST" action="{{ route('auth.otp.verify') }}">
                 @csrf
 

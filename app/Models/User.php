@@ -17,12 +17,13 @@ class User extends Authenticatable
         'role',
         'address',
         'phone',
+        'phone_number',
         'profile_picture',
         'last_login_at',
         'google_id', // <== add this
         'created_at',
         'updated_at',
-];
+    ];
 
 
     protected $hidden = [

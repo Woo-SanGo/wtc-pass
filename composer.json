@@ -14,7 +14,7 @@
         "maatwebsite/excel": "^3.1",
         "messagebird/php-rest-api": "^3.1",
         "spatie/laravel-permission": "^6.19",
-        "twilio/sdk": "*",
+        "twilio/sdk": "^8.6",
         "vonage/client": "^4.2"
     },
     "require-dev": {
